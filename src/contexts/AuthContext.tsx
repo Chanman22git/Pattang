@@ -10,6 +10,14 @@ import type { Session, User } from "@supabase/supabase-js";
 import { supabase, supabaseConfigured } from "../lib/supabase";
 import { ensureProfile } from "../lib/profile";
 
+/**
+ * Pilot toggle. While true (the current default), any visitor who has no
+ * session is silently signed in as a new anonymous Supabase user — no
+ * login screen, RLS still enforced, magic-link flow still wired at
+ * /signin. Set to false to require explicit sign-in again.
+ */
+const PILOT_AUTO_ANON = true;
+
 type AuthState = {
   configured: boolean;
   loading: boolean;
@@ -32,13 +40,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     // Read whatever session is already in localStorage (or just landed from
-    // a magic-link redirect). Then subscribe to future auth events.
+    // a magic-link redirect). If nothing is there, we auto-sign-in
+    // anonymously for the pilot — see PILOT_AUTO_ANON below.
     let active = true;
-    supabase.auth.getSession().then(({ data }) => {
+    (async () => {
+      const { data } = await supabase!.auth.getSession();
       if (!active) return;
-      setSession(data.session);
+
+      if (data.session) {
+        setSession(data.session);
+        setLoading(false);
+        return;
+      }
+
+      if (PILOT_AUTO_ANON) {
+        // Pilot bypass: skip the magic-link screen, drop a fresh anonymous
+        // user. RLS keeps doing the user-scoping; the magic-link flow is
+        // still wired (visit /signin manually) for whenever we flip this
+        // off. Requires Supabase → Authentication → Providers → Anonymous
+        // Sign-Ins to be enabled in the dashboard.
+        const { data: anon, error } = await supabase!.auth.signInAnonymously();
+        if (!active) return;
+        if (error) {
+          // Most common reason: anon sign-ins aren't enabled. We let
+          // ProtectedRoute fall through to /signin so the user still has a
+          // way in via magic link, and surface a helpful note there.
+          console.warn(
+            "Pilot anonymous sign-in failed:",
+            error.message,
+            "— enable Anonymous Sign-Ins in Supabase to skip the login screen."
+          );
+        } else if (anon.session) {
+          setSession(anon.session);
+        }
+      }
+
       setLoading(false);
-    });
+    })();
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       setSession(s);

@@ -58,13 +58,13 @@ export default function Layout() {
                 className="text-xs text-ink-muted truncate"
                 title={user.email ?? ""}
               >
-                {user.email}
+                {user.email ?? "Pilot session"}
               </div>
               <button
                 onClick={() => signOut()}
                 className="mt-2 text-xs text-ink-muted hover:text-ink underline-offset-2 hover:underline"
               >
-                Sign out
+                {user.email ? "Sign out" : "Start fresh session"}
               </button>
             </>
           )}

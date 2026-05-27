@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import TemplateFieldsEditor from "../components/TemplateFieldsEditor";
+import DocumentsList from "../components/DocumentsList";
 import {
   cloneTemplate,
   createTemplate,
@@ -287,16 +288,21 @@ Sincerely,
         />
       </Section>
 
-      {!isNew && (
+      {!isNew && id && (
         <Section
           title="Linked documents"
-          subtitle="Documents created from this template (PRD §4.1 — navigable index, not just a count)."
+          subtitle="Documents created from this template, annotated with the case they belong to (PRD §4.1 — a navigable index, not just a count)."
         >
-          <div className="border border-dashed border-black/15 rounded-md px-4 py-6 text-sm text-ink-muted text-center">
-            {linkedCount === 0
-              ? "No documents yet. The list appears here once Phase 1a chunk 3 ships document creation."
-              : `${linkedCount} document${linkedCount === 1 ? "" : "s"} — list view ships with Phase 1a chunk 3.`}
-          </div>
+          <DocumentsList
+            mode={{ kind: "template", templateId: id }}
+            showCaseTitle={true}
+            showTemplateName={false}
+            emptyHint={
+              linkedCount > 0
+                ? "(Refreshing...)"
+                : "No documents have been created from this template yet."
+            }
+          />
         </Section>
       )}
     </form>

@@ -112,3 +112,39 @@ export type TemplateInsert = Omit<
 export interface TemplateWithFields extends TemplateRow {
   fields: TemplateFieldRow[];
 }
+
+// ---------- Document ------------------------------------------------------
+
+export type DocumentStatus = "draft" | "finalized" | "archived";
+
+/** What the form submits and what we serialise into document.field_values.
+ *  Keyed by *label* (not field id) so a template can rename fields without
+ *  breaking older docs. */
+export type FieldValues = Record<string, string>;
+
+export interface DocumentRow {
+  id: string;
+  user_id: string;
+  case_id: string;
+  template_id: string | null;
+  title: string;
+  gdoc_id: string | null;
+  gdoc_url: string | null;
+  status: DocumentStatus;
+  field_values: FieldValues;
+  created_at: string;
+  updated_at: string;
+}
+
+export type DocumentInsert = Omit<
+  DocumentRow,
+  "id" | "user_id" | "created_at" | "updated_at"
+>;
+
+/** A document row joined with its (optional) template name + the case
+ *  title. Used by the linked-documents index on templates (PRD §4.1) and
+ *  the case documents list. */
+export interface DocumentWithLinks extends DocumentRow {
+  template_name: string | null;
+  case_title: string;
+}

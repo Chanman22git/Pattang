@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { deleteCase, getCase } from "../lib/cases";
+import DocumentsList from "../components/DocumentsList";
 import type { CaseRow } from "../lib/types";
 
 export default function CaseDetailPage() {
@@ -105,14 +106,21 @@ export default function CaseDetailPage() {
       </section>
 
       <section className="mb-10">
-        <h2 className="font-serif text-xl font-semibold mb-3">
-          Case Documents
-        </h2>
-        <div className="border border-dashed border-black/15 rounded-lg p-6 bg-white/50 text-sm text-ink-muted leading-relaxed">
-          The documents you create for this case (petitions, appeals, legal
-          notices) will live here. The next chunk of Phase 1a adds the
-          template-driven creation flow.
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-serif text-xl font-semibold">Case Documents</h2>
+          <Link
+            to={`/cases/${c.id}/documents/new`}
+            className="text-sm font-medium px-3 py-1.5 rounded-md bg-accent text-white hover:bg-accent/90"
+          >
+            New document
+          </Link>
         </div>
+        <DocumentsList
+          mode={{ kind: "case", caseId: c.id }}
+          showCaseTitle={false}
+          showTemplateName={true}
+          emptyHint="No documents yet. Pick a template and the case-specific content is all you have to fill in."
+        />
       </section>
 
       {c.notes && (

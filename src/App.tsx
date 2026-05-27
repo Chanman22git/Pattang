@@ -5,6 +5,7 @@ import SignInPage from "./routes/SignInPage";
 import CasesPage from "./routes/CasesPage";
 import CaseDetailPage from "./routes/CaseDetailPage";
 import TemplatesPage from "./routes/TemplatesPage";
+import TemplateDetailPage from "./routes/TemplateDetailPage";
 import ResearchPage from "./routes/ResearchPage";
 import CalendarPage from "./routes/CalendarPage";
 
@@ -20,6 +21,8 @@ export default function App() {
           <Route path="/cases" element={<CasesPage />} />
           <Route path="/cases/:id" element={<CaseDetailPage />} />
           <Route path="/templates" element={<TemplatesPage />} />
+          <Route path="/templates/new" element={<TemplateDetailPage />} />
+          <Route path="/templates/:id" element={<TemplateDetailPage />} />
           <Route path="/research" element={<ResearchPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
           <Route path="*" element={<Navigate to="/cases" replace />} />

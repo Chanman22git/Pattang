@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { useAuth } from "../contexts/AuthContext";
 
 const navItems = [
   { to: "/cases", label: "Cases" },
@@ -8,6 +9,7 @@ const navItems = [
 ];
 
 export default function Layout() {
+  const { user, signOut } = useAuth();
   return (
     <div className="flex h-full">
       <aside className="w-60 shrink-0 border-r border-black/10 bg-white/60 backdrop-blur px-4 py-6 flex flex-col">
@@ -37,10 +39,25 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
-        <div className="mt-auto text-[11px] text-ink-muted leading-relaxed">
-          Phase 0 — Foundations
-          <br />
-          v0.0.0
+        <div className="mt-auto pt-6 border-t border-black/10">
+          {user && (
+            <>
+              <div className="text-xs text-ink-muted truncate" title={user.email ?? ""}>
+                {user.email}
+              </div>
+              <button
+                onClick={() => signOut()}
+                className="mt-2 text-xs text-ink-muted hover:text-ink underline-offset-2 hover:underline"
+              >
+                Sign out
+              </button>
+            </>
+          )}
+          <div className="mt-3 text-[11px] text-ink-muted leading-relaxed">
+            Phase 1a — chunk 1
+            <br />
+            v0.0.0
+          </div>
         </div>
       </aside>
       <main className="flex-1 overflow-auto">

@@ -7,6 +7,7 @@ import CaseDetailPage from "./routes/CaseDetailPage";
 import TemplatesPage from "./routes/TemplatesPage";
 import TemplateDetailPage from "./routes/TemplateDetailPage";
 import NewDocumentPage from "./routes/NewDocumentPage";
+import TranslatePage from "./routes/TranslatePage";
 import ResearchPage from "./routes/ResearchPage";
 import CalendarPage from "./routes/CalendarPage";
 
@@ -28,6 +29,7 @@ export default function App() {
           <Route path="/templates" element={<TemplatesPage />} />
           <Route path="/templates/new" element={<TemplateDetailPage />} />
           <Route path="/templates/:id" element={<TemplateDetailPage />} />
+          <Route path="/translate" element={<TranslatePage />} />
           <Route path="/research" element={<ResearchPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
           <Route path="*" element={<Navigate to="/cases" replace />} />

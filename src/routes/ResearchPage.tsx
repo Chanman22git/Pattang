@@ -9,9 +9,9 @@ export default function ResearchPage() {
         subtitle="Statutes, case law and a scratchpad — not tied to any one document."
       />
       <EmptyState
-        title="Research arrives in Phase 3"
-        body="Indian Kanoon search + a workspace for saved searches, clipped passages and citation collections."
-        cta="Configure Kanoon API (Phase 3)"
+        title="Coming soon"
+        body="Research arrives in Phase 3: Indian Kanoon search inside the portal, plus a workspace for saved searches, clipped passages and citation collections."
+        cta="Coming soon"
         disabled
       />
     </>

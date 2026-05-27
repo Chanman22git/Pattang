@@ -1,11 +1,18 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 
-const navItems = [
+type NavItem = {
+  to: string;
+  label: string;
+  soon?: boolean;
+};
+
+const navItems: NavItem[] = [
   { to: "/cases", label: "Cases" },
   { to: "/templates", label: "Templates" },
-  { to: "/research", label: "Research" },
-  { to: "/calendar", label: "Calendar" },
+  { to: "/translate", label: "Translate", soon: true },
+  { to: "/research", label: "Research", soon: true },
+  { to: "/calendar", label: "Calendar", soon: true },
 ];
 
 export default function Layout() {
@@ -28,21 +35,29 @@ export default function Layout() {
               to={item.to}
               className={({ isActive }) =>
                 [
-                  "px-3 py-2 rounded-md text-sm font-medium transition-colors",
+                  "flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-colors",
                   isActive
                     ? "bg-accent/10 text-accent"
                     : "text-ink hover:bg-black/5",
                 ].join(" ")
               }
             >
-              {item.label}
+              <span>{item.label}</span>
+              {item.soon && (
+                <span className="text-[10px] font-medium uppercase tracking-wide text-ink-muted bg-black/5 rounded px-1.5 py-0.5">
+                  Soon
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>
         <div className="mt-auto pt-6 border-t border-black/10">
           {user && (
             <>
-              <div className="text-xs text-ink-muted truncate" title={user.email ?? ""}>
+              <div
+                className="text-xs text-ink-muted truncate"
+                title={user.email ?? ""}
+              >
                 {user.email}
               </div>
               <button
@@ -54,7 +69,7 @@ export default function Layout() {
             </>
           )}
           <div className="mt-3 text-[11px] text-ink-muted leading-relaxed">
-            Phase 1a — chunk 1
+            Phase 1a — complete
             <br />
             v0.0.0
           </div>

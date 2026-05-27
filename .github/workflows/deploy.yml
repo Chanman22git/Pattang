@@ -5,6 +5,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Opt every JavaScript action in this workflow into the Node 24 runtime ahead
+# of GitHub's 2026-06-02 forced cutover. Without this, the runner emits a
+# deprecation warning for any action still bundled with Node 20 (e.g. the
+# current actions/deploy-pages@v4). Once those actions ship Node 24 builds we
+# can drop this var.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 # GitHub Pages deploy permissions
 permissions:
   contents: read

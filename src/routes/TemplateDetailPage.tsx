@@ -1106,13 +1106,23 @@ function TemplateEditor({
       </EditSection>
 
       <TemplateLearnFromSample
-        onApply={({ body, fields: newFields }) => {
-          // Replace the body with the redacted sample, and merge in any
-          // new fields whose labels aren't already taken. Existing
+        onApply={({ body, fields: newFields, sections, directions }) => {
+          // Replace the body, stash the wizard outputs (sections + the
+          // standardised directions) on the structure jsonb, and merge in
+          // any new fields whose labels aren't already taken. Existing
           // hand-authored fields keep their position; new ones append.
           setTpl((t) => ({
             ...t,
-            structure: { ...t.structure, body },
+            structure: {
+              ...t.structure,
+              body,
+              sections: sections.map(({ id, label, content }) => ({
+                id,
+                label,
+                content,
+              })),
+              directions,
+            },
           }));
           setFields((current) => {
             const seen = new Set(

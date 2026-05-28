@@ -348,6 +348,203 @@ export async function refineWithClaude(args: {
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// Structural sectioning — splits an Indian filing into the named blocks
+// the advocate thinks in: header, parties (from / to), facts, prayer, etc.
+// ────────────────────────────────────────────────────────────────────────
+
+export interface Section {
+  /** Stable id for editing across re-orders. */
+  id: string;
+  /** e.g. "Header", "Petitioner — on behalf of", "Prayer". */
+  label: string;
+  /** The slice of the source text this section covers (no overlap). */
+  content: string;
+}
+
+/**
+ * Asks Claude to read the parsed text and divide it into semantically
+ * meaningful sections, preserving order and content exactly. Returns the
+ * sections in document order. Throws if the key isn't configured so the
+ * caller can fall back to a manual / single-section path.
+ */
+export async function extractSections(args: {
+  text: string;
+  signal?: AbortSignal;
+}): Promise<{ sections: Section[]; warnings: string[] }> {
+  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined;
+  if (!apiKey) {
+    throw new Error(
+      "Anthropic API key not configured. Set VITE_ANTHROPIC_API_KEY to use AI sectioning, or define sections manually."
+    );
+  }
+
+  const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+
+  const systemPrompt = [
+    "You read an Indian advocate's filed document and break it into the canonical sections that filing structure usually carries.",
+    "Common labels — pick what actually applies; do not invent sections that aren't there:",
+    " - Header (court name, case number line, CNR)",
+    " - Petitioner / Complainant / Appellant — and 'on behalf of' if represented",
+    " - Respondent / Accused / Opponent — and 'on behalf of' if represented",
+    " - Statement of facts",
+    " - Grounds",
+    " - Prayer / Reliefs sought",
+    " - Verification",
+    " - Annexures index",
+    " - Signature block",
+    "Rules:",
+    " 1. The sections, joined in order, must reproduce the input text verbatim — no rewriting, no summarising.",
+    " 2. Order matters: preserve document order.",
+    " 3. Label each section with a concise human-readable name (Title Case, 2–6 words).",
+  ].join("\n");
+
+  const message = await client.messages.create(
+    {
+      model: "claude-sonnet-4-6",
+      max_tokens: 4096,
+      system: systemPrompt,
+      tools: [
+        {
+          name: "submit_sections",
+          description: "Submit the document split into ordered, labelled sections.",
+          input_schema: {
+            type: "object",
+            properties: {
+              sections: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    label: { type: "string" },
+                    content: {
+                      type: "string",
+                      description:
+                        "The contiguous slice of the document this section covers. Verbatim.",
+                    },
+                  },
+                  required: ["label", "content"],
+                },
+              },
+            },
+            required: ["sections"],
+          },
+        },
+      ],
+      tool_choice: { type: "tool", name: "submit_sections" },
+      messages: [{ role: "user", content: `Document:\n\n${args.text}` }],
+    },
+    { signal: args.signal }
+  );
+
+  const tool = message.content.find((c) => c.type === "tool_use");
+  if (!tool || tool.type !== "tool_use") {
+    throw new Error("Claude did not return a tool call.");
+  }
+  const input = tool.input as {
+    sections: Array<{ label: string; content: string }>;
+  };
+  return {
+    sections: input.sections.map((s, i) => ({
+      id: `s${i}`,
+      label: s.label.trim(),
+      content: s.content,
+    })),
+    warnings: [],
+  };
+}
+
+/** Drop-dead-simple manual fallback: one section, the whole text. The
+ *  advocate can split it by editing. Useful when the API key isn't set. */
+export function singleSection(text: string): Section[] {
+  return [{ id: "s0", label: "Body", content: text }];
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Standardise the advocate's free-text directions into a structured
+// template brief that downstream document generation can rely on.
+// ────────────────────────────────────────────────────────────────────────
+
+export interface StandardisedDirections {
+  /** Markdown text in a normalised house style — per-section bullet lists. */
+  standardised: string;
+  /** Short summary of what Claude understood, shown for confirmation. */
+  summary: string;
+}
+
+export async function standardiseDirections(args: {
+  rawDirections: string;
+  sections: Section[];
+  signal?: AbortSignal;
+}): Promise<StandardisedDirections> {
+  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined;
+  if (!apiKey) {
+    throw new Error(
+      "Anthropic API key not configured. The wizard will save your raw directions verbatim."
+    );
+  }
+  const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+
+  const sectionList = args.sections
+    .map((s, i) => `${i + 1}. ${s.label}`)
+    .join("\n");
+
+  const systemPrompt = [
+    "You are turning an advocate's informal notes about how a template should behave into a clean, structured brief that a document-generation step can follow.",
+    "House style:",
+    " - Use markdown.",
+    " - Group instructions by section heading (## Section name). One section per ## heading; use the exact section labels supplied by the user.",
+    " - Each instruction is a one-line bullet under its section. Imperative voice ('Include a paragraph that…', 'Pull the impugned notification from the case file…').",
+    " - If the advocate referenced a section as `§Section name`, treat that as a normal section reference and group the instruction there.",
+    " - Add a 'General' section at the top only for instructions that apply across the whole template.",
+    " - Do not invent instructions the advocate didn't give. Do not omit anything.",
+    "Return the standardised brief plus a one-paragraph summary of what you understood, in the advocate's own register.",
+  ].join("\n");
+
+  const message = await client.messages.create(
+    {
+      model: "claude-sonnet-4-6",
+      max_tokens: 2048,
+      system: systemPrompt,
+      tools: [
+        {
+          name: "submit_directions",
+          description: "Submit the standardised directions plus a comprehension summary.",
+          input_schema: {
+            type: "object",
+            properties: {
+              standardised: { type: "string" },
+              summary: { type: "string" },
+            },
+            required: ["standardised", "summary"],
+          },
+        },
+      ],
+      tool_choice: { type: "tool", name: "submit_directions" },
+      messages: [
+        {
+          role: "user",
+          content: `Sections of the template (in order):\n${sectionList}\n\nAdvocate's notes:\n\n${args.rawDirections}`,
+        },
+      ],
+    },
+    { signal: args.signal }
+  );
+
+  const tool = message.content.find((c) => c.type === "tool_use");
+  if (!tool || tool.type !== "tool_use") {
+    throw new Error("Claude did not return a tool call.");
+  }
+  const input = tool.input as {
+    standardised: string;
+    summary: string;
+  };
+  return {
+    standardised: input.standardised,
+    summary: input.summary,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────────────────────────────────────
 

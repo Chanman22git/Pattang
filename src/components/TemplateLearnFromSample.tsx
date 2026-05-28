@@ -1,120 +1,257 @@
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   applyRedactions,
+  extractSections,
   findCandidates,
   hasAnthropicKey,
   parseDocx,
-  refineWithClaude,
-  type CandidateKind,
-  type CandidateSpan,
+  singleSection,
+  standardiseDirections,
+  type Section,
+  type StandardisedDirections,
 } from "../lib/template-extraction";
-import type {
-  TemplateFieldCategory,
-  TemplateFieldInputType,
-  TemplateFieldInsert,
-} from "../lib/types";
+import type { TemplateFieldInsert } from "../lib/types";
 import { readError } from "../lib/errors";
 
 /**
- * Learn-from-sample — upload a DOCX filing, see the system's guesses at
- * which spans are variables, confirm / re-categorise each, then apply the
- * redacted body + fields to the parent template form.
+ * Learn from a sample — four-step wizard.
+ *
+ *   1. Attach .docx
+ *   2. Confirm document structure (AI proposes sections; advocate edits)
+ *   3. Write directions (lineage of sections at top; free text below)
+ *   4. Confirm standardised directions (AI rewrite; advocate confirms)
+ *
+ * On confirm: pushes body + fields + sections + directions to the parent.
+ * Heuristic field extraction still runs silently so the existing Fields
+ * editor populates without a separate confirmation step.
  */
 
-type Props = {
-  onApply: (result: { body: string; fields: TemplateFieldInsert[] }) => void;
+type ApplyPayload = {
+  body: string;
+  fields: TemplateFieldInsert[];
+  sections: Section[];
+  /** Standardised by Claude if available, otherwise the raw text. */
+  directions: string;
 };
 
-type ParseState = {
-  fileName: string;
-  text: string;
-  warnings: string[];
-  candidates: CandidateSpan[];
+type Props = {
+  onApply: (result: ApplyPayload) => void;
 };
+
+type WizardState =
+  | { step: "upload" }
+  | {
+      step: "sectioning";
+      fileName: string;
+      text: string;
+      sections: Section[];
+      busy: boolean;
+      aiUsed: boolean;
+    }
+  | {
+      step: "directions";
+      fileName: string;
+      text: string;
+      sections: Section[];
+      directions: string;
+      aiUsed: boolean;
+    }
+  | {
+      step: "confirm";
+      fileName: string;
+      text: string;
+      sections: Section[];
+      directions: string;
+      standardised: StandardisedDirections | null;
+      busy: boolean;
+      aiUsed: boolean;
+    };
+
+const STEPS = [
+  { key: "upload", label: "Attach" },
+  { key: "sectioning", label: "Structure" },
+  { key: "directions", label: "Directions" },
+  { key: "confirm", label: "Confirm" },
+] as const;
 
 export default function TemplateLearnFromSample({ onApply }: Props) {
-  const [state, setState] = useState<ParseState | null>(null);
-  const [busy, setBusy] = useState<null | "parsing" | "refining">(null);
+  const [state, setState] = useState<WizardState>({ step: "upload" });
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const canRefine = hasAnthropicKey();
+  const aiAvailable = hasAnthropicKey();
 
   async function handleFile(file: File | null | undefined) {
     if (!file) return;
     setError(null);
-    setBusy("parsing");
     try {
-      const { text, warnings } = await parseDocx(file);
-      const candidates = findCandidates(text);
-      setState({ fileName: file.name, text, warnings, candidates });
+      const { text } = await parseDocx(file);
+      // Enter sectioning step in busy mode — kick off AI sectioning if
+      // available, else start with a single Body section the advocate can split.
+      if (aiAvailable) {
+        setState({
+          step: "sectioning",
+          fileName: file.name,
+          text,
+          sections: [],
+          busy: true,
+          aiUsed: true,
+        });
+        try {
+          const { sections } = await extractSections({ text });
+          setState((s) =>
+            s.step === "sectioning"
+              ? { ...s, sections, busy: false }
+              : s
+          );
+        } catch (err) {
+          setError(readError(err));
+          setState({
+            step: "sectioning",
+            fileName: file.name,
+            text,
+            sections: singleSection(text),
+            busy: false,
+            aiUsed: false,
+          });
+        }
+      } else {
+        setState({
+          step: "sectioning",
+          fileName: file.name,
+          text,
+          sections: singleSection(text),
+          busy: false,
+          aiUsed: false,
+        });
+      }
     } catch (err) {
       setError(readError(err));
-    } finally {
-      setBusy(null);
     }
-  }
-
-  function updateCandidate(id: string, patch: Partial<CandidateSpan>) {
-    setState((s) =>
-      s
-        ? {
-            ...s,
-            candidates: s.candidates.map((c) =>
-              c.id === id ? { ...c, ...patch } : c
-            ),
-          }
-        : s
-    );
-  }
-
-  async function onRefine() {
-    if (!state) return;
-    setError(null);
-    setBusy("refining");
-    try {
-      const refined = await refineWithClaude({ text: state.text });
-      // Replace the heuristic state with Claude's redacted body + fields.
-      // The advocate sees the new body in the preview pane (no candidate
-      // spans — Claude already redacted) and can apply or reset.
-      setState({
-        fileName: state.fileName,
-        text: refined.body,
-        warnings: [...state.warnings, ...refined.warnings],
-        candidates: [],
-      });
-      // Store the AI fields on a side channel via window so onApplyAI()
-      // can pick them up. Avoiding a separate state slot to keep the
-      // component small.
-      (window as unknown as { __vc_ai_fields?: TemplateFieldInsert[] }).__vc_ai_fields =
-        refined.fields;
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  function onApplyClick() {
-    if (!state) return;
-    const aiFields = (
-      window as unknown as { __vc_ai_fields?: TemplateFieldInsert[] }
-    ).__vc_ai_fields;
-    if (aiFields && aiFields.length) {
-      // After a refine, the text is already the redacted body and no
-      // candidate spans are left. Use those stashed fields directly.
-      onApply({ body: state.text, fields: aiFields });
-      (window as unknown as { __vc_ai_fields?: TemplateFieldInsert[] }).__vc_ai_fields =
-        undefined;
-    } else {
-      onApply(applyRedactions(state.text, state.candidates));
-    }
-    reset();
   }
 
   function reset() {
-    setState(null);
     setError(null);
+    setState({ step: "upload" });
     if (inputRef.current) inputRef.current.value = "";
+  }
+
+  function goBack() {
+    setError(null);
+    if (state.step === "sectioning") return reset();
+    if (state.step === "directions") {
+      setState({
+        step: "sectioning",
+        fileName: state.fileName,
+        text: state.text,
+        sections: state.sections,
+        busy: false,
+        aiUsed: state.aiUsed,
+      });
+      return;
+    }
+    if (state.step === "confirm") {
+      setState({
+        step: "directions",
+        fileName: state.fileName,
+        text: state.text,
+        sections: state.sections,
+        directions: state.directions,
+        aiUsed: state.aiUsed,
+      });
+      return;
+    }
+  }
+
+  function goNextFromSectioning() {
+    if (state.step !== "sectioning") return;
+    if (state.sections.length === 0) {
+      setError("At least one section is needed.");
+      return;
+    }
+    setState({
+      step: "directions",
+      fileName: state.fileName,
+      text: state.text,
+      sections: state.sections,
+      directions: "",
+      aiUsed: state.aiUsed,
+    });
+  }
+
+  async function goNextFromDirections() {
+    if (state.step !== "directions") return;
+    setError(null);
+    const directions = state.directions.trim();
+    if (!directions) {
+      // No instructions written — skip the AI confirmation and apply directly.
+      finalise({
+        sections: state.sections,
+        directions: "",
+        text: state.text,
+      });
+      return;
+    }
+    if (!aiAvailable) {
+      // No key — save the raw directions and apply.
+      finalise({
+        sections: state.sections,
+        directions,
+        text: state.text,
+      });
+      return;
+    }
+    // Enter confirm step in busy mode while Claude standardises.
+    setState({
+      step: "confirm",
+      fileName: state.fileName,
+      text: state.text,
+      sections: state.sections,
+      directions,
+      standardised: null,
+      busy: true,
+      aiUsed: state.aiUsed,
+    });
+    try {
+      const standardised = await standardiseDirections({
+        rawDirections: directions,
+        sections: state.sections,
+      });
+      setState((s) =>
+        s.step === "confirm"
+          ? { ...s, standardised, busy: false }
+          : s
+      );
+    } catch (err) {
+      setError(readError(err));
+      setState((s) =>
+        s.step === "confirm" ? { ...s, busy: false } : s
+      );
+    }
+  }
+
+  function finalise(input: {
+    sections: Section[];
+    directions: string;
+    text: string;
+  }) {
+    const candidates = findCandidates(input.text);
+    const { body, fields } = applyRedactions(input.text, candidates);
+    onApply({
+      body,
+      fields,
+      sections: input.sections,
+      directions: input.directions,
+    });
+    reset();
+  }
+
+  function onConfirmStandardised() {
+    if (state.step !== "confirm") return;
+    finalise({
+      sections: state.sections,
+      directions: state.standardised?.standardised ?? state.directions,
+      text: state.text,
+    });
   }
 
   return (
@@ -134,27 +271,12 @@ export default function TemplateLearnFromSample({ onApply }: Props) {
         className="text-ink-2 italic"
         style={{ fontSize: 13, marginBottom: 14, maxWidth: 640 }}
       >
-        Attach a filed document. The system reads its structure, points out
-        the spans that change from case to case, and proposes them as
-        fields. Your sample is parsed in the browser — nothing leaves the
-        page unless you click <span className="font-medium">Refine with AI</span>.
+        Attach a filed document. The system reads its structure, lets you
+        confirm or edit the sections, and turns your free-text notes into a
+        clean brief for how this template should be used.
       </p>
 
-      {!state && (
-        <DropZone
-          busy={busy === "parsing"}
-          onFile={handleFile}
-          onOpenPicker={() => inputRef.current?.click()}
-        />
-      )}
-
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        style={{ display: "none" }}
-        onChange={(e) => handleFile(e.target.files?.[0])}
-      />
+      <Stepper current={state.step} />
 
       {error && (
         <div
@@ -172,479 +294,841 @@ export default function TemplateLearnFromSample({ onApply }: Props) {
         </div>
       )}
 
-      {state && (
-        <ParseResult
-          state={state}
-          busy={busy}
-          canRefine={canRefine}
-          onUpdate={updateCandidate}
-          onRefine={onRefine}
-          onApply={onApplyClick}
-          onDiscard={reset}
+      {state.step === "upload" && (
+        <UploadStep
+          aiAvailable={aiAvailable}
+          onOpenPicker={() => inputRef.current?.click()}
+          onFile={handleFile}
         />
       )}
+
+      {state.step === "sectioning" && (
+        <SectionStep
+          state={state}
+          onChangeSections={(sections) =>
+            setState((s) => (s.step === "sectioning" ? { ...s, sections } : s))
+          }
+          onBack={goBack}
+          onNext={goNextFromSectioning}
+          aiAvailable={aiAvailable}
+        />
+      )}
+
+      {state.step === "directions" && (
+        <DirectionsStep
+          state={state}
+          onChange={(directions) =>
+            setState((s) =>
+              s.step === "directions" ? { ...s, directions } : s
+            )
+          }
+          onBack={goBack}
+          onNext={goNextFromDirections}
+          aiAvailable={aiAvailable}
+        />
+      )}
+
+      {state.step === "confirm" && (
+        <ConfirmStep
+          state={state}
+          onBack={goBack}
+          onConfirm={onConfirmStandardised}
+        />
+      )}
+
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        style={{ display: "none" }}
+        onChange={(e) => handleFile(e.target.files?.[0])}
+      />
     </section>
   );
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// Stepper
+// ────────────────────────────────────────────────────────────────────────
 
-function DropZone({
-  busy,
-  onFile,
+function Stepper({ current }: { current: WizardState["step"] }) {
+  const currentIdx = STEPS.findIndex((s) => s.key === current);
+  return (
+    <ol
+      className="flex items-center"
+      style={{
+        listStyle: "none",
+        padding: 0,
+        margin: "0 0 18px",
+        gap: 6,
+        flexWrap: "wrap",
+      }}
+    >
+      {STEPS.map((s, i) => {
+        const isActive = i === currentIdx;
+        const isDone = i < currentIdx;
+        const ink = isActive ? "#FAF8F3" : isDone ? "#1A1F2E" : "#A8956F";
+        const bg = isActive ? "#1A1F2E" : "transparent";
+        const border = isActive
+          ? "1px solid #1A1F2E"
+          : isDone
+          ? "1px solid rgba(90,58,31,0.4)"
+          : "1px dashed rgba(90,58,31,0.4)";
+        return (
+          <li key={s.key} className="flex items-center" style={{ gap: 6 }}>
+            <span
+              className="flex items-center"
+              style={{
+                gap: 8,
+                padding: "5px 12px",
+                borderRadius: 2,
+                background: bg,
+                border,
+                color: ink,
+                fontSize: 12.5,
+                fontWeight: isActive ? 500 : 400,
+              }}
+            >
+              <span
+                className="font-mono"
+                style={{
+                  fontSize: 10.5,
+                  opacity: 0.7,
+                  letterSpacing: "0.02em",
+                }}
+              >
+                {i + 1}
+              </span>
+              <span>{s.label}</span>
+            </span>
+            {i < STEPS.length - 1 && (
+              <span
+                className="text-ink-3"
+                style={{ fontSize: 14, fontFamily: "Spectral, Georgia, serif" }}
+              >
+                ›
+              </span>
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Step 1 — Upload
+// ────────────────────────────────────────────────────────────────────────
+
+function UploadStep({
+  aiAvailable,
   onOpenPicker,
+  onFile,
 }: {
-  busy: boolean;
-  onFile: (f: File | null | undefined) => void;
+  aiAvailable: boolean;
   onOpenPicker: () => void;
+  onFile: (f: File | null | undefined) => void;
 }) {
   const [hover, setHover] = useState(false);
   return (
-    <div
-      onClick={onOpenPicker}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setHover(true);
-      }}
-      onDragLeave={() => setHover(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setHover(false);
-        const file = e.dataTransfer.files?.[0];
-        onFile(file);
-      }}
-      style={{
-        cursor: busy ? "wait" : "pointer",
-        background: hover ? "rgba(184,134,47,0.07)" : "#FAF8F3",
-        border: `0.5px dashed ${hover ? "#B8862F" : "#5A3A1F"}`,
-        borderRadius: 2,
-        padding: "32px 20px",
-        textAlign: "center",
-        transition: "background 120ms ease-out, border-color 120ms ease-out",
-      }}
-    >
+    <>
       <div
-        className="font-serif text-ink"
-        style={{ fontSize: 16, fontWeight: 500, lineHeight: 1.3 }}
-      >
-        {busy ? "Parsing…" : "Drop a sample filing here"}
-      </div>
-      <div
-        className="text-ink-2"
-        style={{ fontSize: 13, marginTop: 6, lineHeight: 1.55 }}
-      >
-        or <span className="vc-link">click to choose a .docx</span>
-      </div>
-      <div
-        className="text-ink-3 italic"
-        style={{ fontSize: 12, marginTop: 10 }}
-      >
-        Word documents only · scanned PDFs land in a later pass
-      </div>
-    </div>
-  );
-}
-
-// ────────────────────────────────────────────────────────────────────────
-
-function ParseResult({
-  state,
-  busy,
-  canRefine,
-  onUpdate,
-  onRefine,
-  onApply,
-  onDiscard,
-}: {
-  state: ParseState;
-  busy: null | "parsing" | "refining";
-  canRefine: boolean;
-  onUpdate: (id: string, patch: Partial<CandidateSpan>) => void;
-  onRefine: () => void;
-  onApply: () => void;
-  onDiscard: () => void;
-}) {
-  const accepted = state.candidates.filter((c) => c.accepted);
-  const grouped = useMemo(
-    () => groupByCategory(state.candidates),
-    [state.candidates]
-  );
-
-  return (
-    <div
-      style={{
-        marginTop: 4,
-        background: "#FAF8F3",
-        border: "0.5px solid rgba(90,58,31,0.18)",
-        borderRadius: 2,
-      }}
-    >
-      <header
-        className="flex items-baseline justify-between"
-        style={{
-          padding: "14px 18px",
-          borderBottom: "0.5px solid rgba(90,58,31,0.18)",
-          gap: 16,
-          flexWrap: "wrap",
+        onClick={onOpenPicker}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setHover(true);
         }}
-      >
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            className="uppercase font-medium text-ink-3"
-            style={{ fontSize: 10.5, letterSpacing: "0.1em", marginBottom: 4 }}
-          >
-            Parsed
-          </div>
-          <div
-            className="font-serif text-ink truncate"
-            style={{ fontSize: 16, fontWeight: 500 }}
-            title={state.fileName}
-          >
-            {state.fileName}
-          </div>
-          <div
-            className="font-mono text-ink-3"
-            style={{ fontSize: 11.5, marginTop: 4, letterSpacing: "0.02em" }}
-          >
-            {state.text.length.toLocaleString()} chars ·{" "}
-            {accepted.length}/{state.candidates.length} candidates accepted
-            {state.candidates.length === 0 &&
-              " · Claude can find spans regex missed"}
-          </div>
-        </div>
-        <div className="flex items-center" style={{ gap: 8 }}>
-          {canRefine && (
-            <button
-              className="vc-btn-secondary"
-              onClick={onRefine}
-              disabled={busy !== null}
-              title="Send the parsed text to Claude for a cleaner classification"
-            >
-              {busy === "refining" ? "Refining…" : "Refine with AI"}
-            </button>
-          )}
-          <button
-            className="vc-btn-secondary"
-            onClick={onDiscard}
-            disabled={busy !== null}
-          >
-            Discard
-          </button>
-          <button
-            className="vc-btn-primary"
-            onClick={onApply}
-            disabled={busy !== null}
-          >
-            Apply to template
-          </button>
-        </div>
-      </header>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 360px",
-          gap: 0,
+        onDragLeave={() => setHover(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setHover(false);
+          onFile(e.dataTransfer.files?.[0]);
         }}
-      >
-        <BodyPreview text={state.text} candidates={state.candidates} />
-        <CandidateRail
-          grouped={grouped}
-          onUpdate={onUpdate}
-          hint={
-            state.candidates.length === 0
-              ? "No regex candidates found. Click Refine with AI for a deeper pass."
-              : undefined
-          }
-        />
-      </div>
-    </div>
-  );
-}
-
-// ────────────────────────────────────────────────────────────────────────
-
-function BodyPreview({
-  text,
-  candidates,
-}: {
-  text: string;
-  candidates: CandidateSpan[];
-}) {
-  // Render the source text with each accepted candidate wrapped in a
-  // brass-tinted span. Rejected candidates show with a soft strike-through.
-  const sorted = [...candidates].sort((a, b) => a.start - b.start);
-  const pieces: React.ReactNode[] = [];
-  let cursor = 0;
-  for (const span of sorted) {
-    if (cursor < span.start)
-      pieces.push(<span key={`t${cursor}`}>{text.slice(cursor, span.start)}</span>);
-    pieces.push(
-      <span
-        key={span.id}
-        title={`${span.suggestedLabel} · ${span.suggestedCategory}`}
         style={{
-          background: span.accepted
-            ? "rgba(184,134,47,0.18)"
-            : "transparent",
-          color: span.accepted ? "#1A1F2E" : "#A8956F",
-          padding: "0 2px",
+          cursor: "pointer",
+          background: hover ? "rgba(184,134,47,0.07)" : "#FAF8F3",
+          border: `0.5px dashed ${hover ? "#B8862F" : "#5A3A1F"}`,
           borderRadius: 2,
-          textDecoration: span.accepted ? "none" : "line-through",
+          padding: "32px 20px",
+          textAlign: "center",
+          transition: "background 120ms ease-out, border-color 120ms ease-out",
         }}
       >
-        {text.slice(span.start, span.end)}
-      </span>
-    );
-    cursor = span.end;
-  }
-  if (cursor < text.length)
-    pieces.push(<span key={`t${cursor}`}>{text.slice(cursor)}</span>);
-
-  return (
-    <div
-      style={{
-        padding: "18px 20px",
-        borderRight: "0.5px solid rgba(90,58,31,0.18)",
-        maxHeight: 480,
-        overflow: "auto",
-        fontFamily: "Spectral, Georgia, serif",
-        fontSize: 13.5,
-        color: "#1A1F2E",
-        lineHeight: 1.7,
-        whiteSpace: "pre-wrap",
-      }}
-    >
-      {pieces.length ? pieces : <span className="text-ink-3 italic">Empty</span>}
-    </div>
-  );
-}
-
-// ────────────────────────────────────────────────────────────────────────
-
-function CandidateRail({
-  grouped,
-  onUpdate,
-  hint,
-}: {
-  grouped: Record<TemplateFieldCategory, CandidateSpan[]>;
-  onUpdate: (id: string, patch: Partial<CandidateSpan>) => void;
-  hint?: string;
-}) {
-  const sections: Array<{
-    key: TemplateFieldCategory;
-    label: string;
-    sub: string;
-    dot: string;
-  }> = [
-    {
-      key: "basic",
-      label: "Basic",
-      sub: "Asked each time",
-      dot: "#B8862F",
-    },
-    {
-      key: "prefill",
-      label: "Standard · prefilled",
-      sub: "From the advocate's profile",
-      dot: "#2D4A3E",
-    },
-    {
-      key: "case_specific",
-      label: "Case-specific",
-      sub: "Per-case facts and identifiers",
-      dot: "#4A1818",
-    },
-  ];
-
-  return (
-    <div
-      style={{
-        padding: "12px 16px 18px",
-        maxHeight: 480,
-        overflow: "auto",
-        background: "#FFFFFF",
-      }}
-    >
-      {hint && (
+        <div
+          className="font-serif text-ink"
+          style={{ fontSize: 16, fontWeight: 500, lineHeight: 1.3 }}
+        >
+          Drop a sample filing here
+        </div>
+        <div
+          className="text-ink-2"
+          style={{ fontSize: 13, marginTop: 6, lineHeight: 1.55 }}
+        >
+          or <span className="vc-link">click to choose a .docx</span>
+        </div>
         <div
           className="text-ink-3 italic"
-          style={{ fontSize: 12.5, marginBottom: 10, lineHeight: 1.55 }}
+          style={{ fontSize: 12, marginTop: 10 }}
         >
-          {hint}
+          Word documents only · scanned PDFs land in a later pass
+        </div>
+      </div>
+      {!aiAvailable && (
+        <div
+          className="text-ink-3 italic"
+          style={{
+            marginTop: 10,
+            fontSize: 12.5,
+            lineHeight: 1.55,
+          }}
+        >
+          Anthropic key not set. The wizard still works, but you'll define
+          sections yourself and the final standardisation step is skipped.
         </div>
       )}
-      {sections.map((s) => (
-        <div key={s.key} style={{ marginBottom: 16 }}>
-          <div
-            className="flex items-center"
-            style={{ gap: 8, marginBottom: 6 }}
-          >
-            <span style={{ width: 6, height: 6, background: s.dot }} />
-            <div
-              className="font-serif text-ink"
-              style={{ fontSize: 14, fontWeight: 500 }}
-            >
-              {s.label}
-            </div>
-            <div
-              className="font-mono text-ink-3"
-              style={{
-                fontSize: 11,
-                marginLeft: "auto",
-                letterSpacing: "0.02em",
-              }}
-            >
-              {grouped[s.key].length}
-            </div>
-          </div>
-          <div
-            className="text-ink-2 italic"
-            style={{ fontSize: 11.5, marginBottom: 8 }}
-          >
-            {s.sub}
-          </div>
-          {grouped[s.key].length === 0 ? (
-            <div className="text-ink-3" style={{ fontSize: 12, fontStyle: "italic" }}>
-              None
-            </div>
-          ) : (
-            <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-              {grouped[s.key].map((c) => (
-                <CandidateRow key={c.id} c={c} onUpdate={onUpdate} />
-              ))}
-            </ul>
-          )}
-        </div>
-      ))}
-    </div>
+    </>
   );
 }
 
-function CandidateRow({
-  c,
-  onUpdate,
+// ────────────────────────────────────────────────────────────────────────
+// Step 2 — Sectioning
+// ────────────────────────────────────────────────────────────────────────
+
+function SectionStep({
+  state,
+  onChangeSections,
+  onBack,
+  onNext,
+  aiAvailable,
 }: {
-  c: CandidateSpan;
-  onUpdate: (id: string, patch: Partial<CandidateSpan>) => void;
+  state: Extract<WizardState, { step: "sectioning" }>;
+  onChangeSections: (sections: Section[]) => void;
+  onBack: () => void;
+  onNext: () => void;
+  aiAvailable: boolean;
 }) {
+  function rename(id: string, label: string) {
+    onChangeSections(
+      state.sections.map((s) => (s.id === id ? { ...s, label } : s))
+    );
+  }
+  function remove(id: string) {
+    onChangeSections(state.sections.filter((s) => s.id !== id));
+  }
+  function moveUp(idx: number) {
+    if (idx === 0) return;
+    const next = [...state.sections];
+    [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+    onChangeSections(next);
+  }
+  function moveDown(idx: number) {
+    if (idx >= state.sections.length - 1) return;
+    const next = [...state.sections];
+    [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]];
+    onChangeSections(next);
+  }
+  function splitFromCaret(id: string, splitOffset: number) {
+    const idx = state.sections.findIndex((s) => s.id === id);
+    if (idx < 0) return;
+    const s = state.sections[idx];
+    if (splitOffset <= 0 || splitOffset >= s.content.length) return;
+    const a = { ...s, content: s.content.slice(0, splitOffset) };
+    const b: Section = {
+      id: `s${Date.now()}`,
+      label: "New section",
+      content: s.content.slice(splitOffset),
+    };
+    const next = [...state.sections];
+    next.splice(idx, 1, a, b);
+    onChangeSections(next);
+  }
+
+  return (
+    <>
+      <div
+        style={{
+          marginTop: 4,
+          background: "#FAF8F3",
+          border: "0.5px solid rgba(90,58,31,0.18)",
+          borderRadius: 2,
+          padding: "14px 18px",
+          marginBottom: 14,
+        }}
+      >
+        <div
+          className="uppercase font-medium text-ink-3"
+          style={{ fontSize: 10.5, letterSpacing: "0.1em", marginBottom: 4 }}
+        >
+          Parsed
+        </div>
+        <div
+          className="font-serif text-ink truncate"
+          style={{ fontSize: 16, fontWeight: 500 }}
+          title={state.fileName}
+        >
+          {state.fileName}
+        </div>
+        <div
+          className="font-mono text-ink-3"
+          style={{ fontSize: 11.5, marginTop: 4, letterSpacing: "0.02em" }}
+        >
+          {state.text.length.toLocaleString()} chars · {state.sections.length}{" "}
+          section{state.sections.length === 1 ? "" : "s"}
+          {state.aiUsed ? " · proposed by AI" : " · manual"}
+        </div>
+      </div>
+
+      {state.busy ? (
+        <BusyCard label="Reading the document structure…" />
+      ) : (
+        <>
+          {!aiAvailable && (
+            <div
+              className="text-ink-3 italic"
+              style={{
+                fontSize: 12.5,
+                marginBottom: 12,
+                lineHeight: 1.55,
+              }}
+            >
+              No AI key — sectioning began with a single Body block. Use
+              <span style={{ fontStyle: "normal" }}> Split here </span>
+              to break it where you want, then label each piece.
+            </div>
+          )}
+          <ol style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {state.sections.map((s, i) => (
+              <SectionRow
+                key={s.id}
+                section={s}
+                index={i}
+                last={i === state.sections.length - 1}
+                onRename={(label) => rename(s.id, label)}
+                onRemove={() => remove(s.id)}
+                onUp={() => moveUp(i)}
+                onDown={() => moveDown(i)}
+                onSplit={(offset) => splitFromCaret(s.id, offset)}
+              />
+            ))}
+          </ol>
+        </>
+      )}
+
+      <WizardFooter
+        leftLabel="Back"
+        onLeft={onBack}
+        rightLabel="Next"
+        onRight={onNext}
+        rightDisabled={state.busy || state.sections.length === 0}
+      />
+    </>
+  );
+}
+
+function SectionRow({
+  section,
+  index,
+  last,
+  onRename,
+  onRemove,
+  onUp,
+  onDown,
+  onSplit,
+}: {
+  section: Section;
+  index: number;
+  last: boolean;
+  onRename: (label: string) => void;
+  onRemove: () => void;
+  onUp: () => void;
+  onDown: () => void;
+  onSplit: (offset: number) => void;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  function splitAtCaret() {
+    const el = textareaRef.current;
+    if (!el) return;
+    onSplit(el.selectionStart);
+  }
   return (
     <li
       style={{
-        padding: "8px 0",
-        borderTop: "0.5px dashed rgba(90,58,31,0.18)",
+        padding: "12px 0",
+        borderTop: index === 0 ? "0.5px solid rgba(90,58,31,0.18)" : "none",
+        borderBottom: last ? "none" : "0.5px solid rgba(90,58,31,0.18)",
       }}
     >
-      <div className="flex items-baseline" style={{ gap: 8 }}>
+      <div className="flex items-center" style={{ gap: 8, marginBottom: 8 }}>
+        <span
+          className="font-mono text-ink-3"
+          style={{ fontSize: 11, width: 24, letterSpacing: "0.02em" }}
+        >
+          {(index + 1).toString().padStart(2, "0")}
+        </span>
         <input
-          type="checkbox"
-          checked={c.accepted}
-          onChange={(e) => onUpdate(c.id, { accepted: e.target.checked })}
-          style={{ marginTop: 2, accentColor: "#1A1F2E" }}
-        />
-        <input
-          value={c.suggestedLabel}
-          onChange={(e) => onUpdate(c.id, { suggestedLabel: e.target.value })}
+          value={section.label}
+          onChange={(e) => onRename(e.target.value)}
           className="vc-input"
           style={{
             flex: 1,
             minWidth: 0,
-            fontSize: 12.5,
-            padding: "4px 8px",
+            fontSize: 14,
+            fontFamily: "Spectral, Georgia, serif",
+            fontWeight: 500,
+            padding: "5px 10px",
           }}
         />
+        <button
+          type="button"
+          className="vc-iconbtn font-mono"
+          style={{ fontSize: 12, padding: "4px 8px" }}
+          onClick={onUp}
+          title="Move up"
+        >
+          ↑
+        </button>
+        <button
+          type="button"
+          className="vc-iconbtn font-mono"
+          style={{ fontSize: 12, padding: "4px 8px" }}
+          onClick={onDown}
+          title="Move down"
+        >
+          ↓
+        </button>
+        <button
+          type="button"
+          className="vc-iconbtn font-mono text-seal"
+          style={{ fontSize: 13, padding: "4px 8px", color: "#4A1818" }}
+          onClick={onRemove}
+          title="Remove section"
+        >
+          ×
+        </button>
       </div>
+      <textarea
+        ref={textareaRef}
+        value={section.content}
+        readOnly
+        rows={Math.min(8, Math.max(2, section.content.split("\n").length))}
+        className="vc-input font-serif"
+        style={{
+          width: "100%",
+          fontSize: 13,
+          lineHeight: 1.55,
+          background: "#FFFFFF",
+          color: "#1A1F2E",
+        }}
+        title="Click into the text and choose 'Split here' at the caret position"
+      />
       <div
         className="flex items-center"
-        style={{ gap: 8, marginTop: 6, marginLeft: 24 }}
+        style={{ gap: 12, marginTop: 6, fontSize: 11.5 }}
       >
-        <KindTag kind={c.kind} />
-        <code
-          className="font-mono text-ink-2 truncate"
-          style={{
-            fontSize: 11,
-            color: "#6B6358",
-            flex: 1,
-            minWidth: 0,
-          }}
-          title={c.text}
+        <button
+          type="button"
+          className="vc-link"
+          style={{ fontSize: 11.5, background: "none", border: "none", padding: 0, cursor: "pointer", color: "#6B6358" }}
+          onClick={splitAtCaret}
         >
-          {c.text}
-        </code>
-        <select
-          value={c.suggestedCategory}
-          onChange={(e) =>
-            onUpdate(c.id, {
-              suggestedCategory: e.target.value as TemplateFieldCategory,
-            })
-          }
-          className="vc-input"
-          style={{ fontSize: 11.5, padding: "3px 6px" }}
+          Split here
+        </button>
+        <span
+          className="font-mono text-ink-3"
+          style={{ fontSize: 11, letterSpacing: "0.02em" }}
         >
-          <option value="basic">Basic</option>
-          <option value="prefill">Prefill</option>
-          <option value="case_specific">Case-specific</option>
-        </select>
-        <select
-          value={c.suggestedInputType}
-          onChange={(e) =>
-            onUpdate(c.id, {
-              suggestedInputType: e.target.value as TemplateFieldInputType,
-            })
-          }
-          className="vc-input"
-          style={{ fontSize: 11.5, padding: "3px 6px" }}
-        >
-          <option value="text">text</option>
-          <option value="textarea">textarea</option>
-          <option value="date">date</option>
-          <option value="number">number</option>
-        </select>
+          {section.content.length} chars
+        </span>
       </div>
     </li>
   );
 }
 
-function KindTag({ kind }: { kind: CandidateKind }) {
-  const labels: Record<CandidateKind, string> = {
-    date: "DATE",
-    case_no: "CASE NO.",
-    cnr: "CNR",
-    money: "AMOUNT",
-    email: "EMAIL",
-    phone: "PHONE",
-    survey_no: "SY. NO.",
-    name: "NAME",
-    address: "ADDR.",
-    ai_other: "AI",
-  };
+// ────────────────────────────────────────────────────────────────────────
+// Step 3 — Directions
+// ────────────────────────────────────────────────────────────────────────
+
+function DirectionsStep({
+  state,
+  onChange,
+  onBack,
+  onNext,
+  aiAvailable,
+}: {
+  state: Extract<WizardState, { step: "directions" }>;
+  onChange: (directions: string) => void;
+  onBack: () => void;
+  onNext: () => void;
+  aiAvailable: boolean;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  function insertReference(label: string) {
+    const el = textareaRef.current;
+    const ref = `§${label}`;
+    if (!el) {
+      onChange(state.directions + (state.directions.endsWith(" ") ? "" : " ") + ref);
+      return;
+    }
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const before = state.directions.slice(0, start);
+    const after = state.directions.slice(end);
+    const insert =
+      (before && !before.endsWith(" ") ? " " : "") +
+      ref +
+      (after && !after.startsWith(" ") ? " " : "");
+    const next = before + insert + after;
+    onChange(next);
+    // restore caret right after the inserted reference
+    requestAnimationFrame(() => {
+      el.focus();
+      const pos = (before + insert).length;
+      el.setSelectionRange(pos, pos);
+    });
+  }
+
   return (
-    <span
-      className="font-mono uppercase"
-      style={{
-        fontSize: 9.5,
-        color: "#A8956F",
-        letterSpacing: "0.08em",
-        padding: "1px 4px",
-        border: "0.5px solid rgba(90,58,31,0.18)",
-        borderRadius: 2,
-      }}
-    >
-      {labels[kind]}
-    </span>
+    <>
+      <SectionLineage sections={state.sections} onPick={insertReference} />
+      <p
+        className="text-ink-3 italic"
+        style={{ fontSize: 12, marginTop: 4, marginBottom: 10, lineHeight: 1.55 }}
+      >
+        Click any pill above to drop a <span style={{ fontStyle: "normal" }}>§Section</span>{" "}
+        reference into your notes at the caret.
+      </p>
+      <textarea
+        ref={textareaRef}
+        value={state.directions}
+        onChange={(e) => onChange(e.target.value)}
+        rows={10}
+        className="vc-input"
+        style={{
+          width: "100%",
+          fontSize: 14,
+          lineHeight: 1.6,
+          fontFamily: "Inter, system-ui, sans-serif",
+        }}
+        placeholder={`How should this template behave when used in a case?\n\nExamples:\n- In §Prayer, always include a request for costs.\n- §Statement of facts should be a single paragraph drawn from the case's confirmed facts.\n- Use the petitioner's address from the case profile when available.`}
+      />
+      {!aiAvailable && (
+        <div
+          className="text-ink-3 italic"
+          style={{ marginTop: 8, fontSize: 12.5, lineHeight: 1.55 }}
+        >
+          Without an Anthropic key, your notes are saved verbatim — the AI
+          confirmation step is skipped.
+        </div>
+      )}
+      <WizardFooter
+        leftLabel="Back"
+        onLeft={onBack}
+        rightLabel={
+          state.directions.trim()
+            ? aiAvailable
+              ? "Create template"
+              : "Save & finish"
+            : "Skip directions"
+        }
+        onRight={onNext}
+      />
+    </>
   );
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// Step 4 — Confirm standardised directions
+// ────────────────────────────────────────────────────────────────────────
 
-function groupByCategory(
-  candidates: CandidateSpan[]
-): Record<TemplateFieldCategory, CandidateSpan[]> {
-  const out: Record<TemplateFieldCategory, CandidateSpan[]> = {
-    basic: [],
-    prefill: [],
-    case_specific: [],
-  };
-  for (const c of candidates) out[c.suggestedCategory].push(c);
-  return out;
+function ConfirmStep({
+  state,
+  onBack,
+  onConfirm,
+}: {
+  state: Extract<WizardState, { step: "confirm" }>;
+  onBack: () => void;
+  onConfirm: () => void;
+}) {
+  if (state.busy)
+    return (
+      <>
+        <BusyCard label="Reading your directions…" />
+        <WizardFooter leftLabel="Back" onLeft={onBack} rightDisabled />
+      </>
+    );
+  if (!state.standardised) {
+    return (
+      <>
+        <div
+          className="text-seal"
+          style={{
+            background: "#EAD9D9",
+            border: "0.5px solid #4A1818",
+            borderRadius: 2,
+            padding: "12px 14px",
+            fontSize: 13,
+            marginTop: 4,
+          }}
+        >
+          Couldn't standardise the directions. Go back and try again, or save
+          the raw notes by clicking Confirm.
+        </div>
+        <WizardFooter
+          leftLabel="Back"
+          onLeft={onBack}
+          rightLabel="Save raw"
+          onRight={onConfirm}
+        />
+      </>
+    );
+  }
+  return (
+    <>
+      <div
+        style={{
+          marginTop: 4,
+          background: "#FAF8F3",
+          border: "0.5px solid rgba(90,58,31,0.18)",
+          borderRadius: 2,
+          padding: "16px 20px",
+          marginBottom: 12,
+        }}
+      >
+        <div
+          className="uppercase font-medium text-ink-3"
+          style={{ fontSize: 10.5, letterSpacing: "0.1em", marginBottom: 8 }}
+        >
+          What I understood
+        </div>
+        <div
+          className="font-serif text-ink"
+          style={{ fontSize: 14, lineHeight: 1.6 }}
+        >
+          {state.standardised.summary}
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 16,
+          alignItems: "stretch",
+        }}
+      >
+        <SidePane label="Your notes" mono content={state.directions} />
+        <SidePane
+          label="Standardised brief"
+          markdown
+          content={state.standardised.standardised}
+        />
+      </div>
+
+      <WizardFooter
+        leftLabel="Back · edit notes"
+        onLeft={onBack}
+        rightLabel="Looks right · create template"
+        onRight={onConfirm}
+      />
+    </>
+  );
 }
+
+function SidePane({
+  label,
+  content,
+  mono,
+  markdown,
+}: {
+  label: string;
+  content: string;
+  mono?: boolean;
+  markdown?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        background: markdown ? "#FAF8F3" : "#FFFFFF",
+        border: "0.5px solid rgba(90,58,31,0.18)",
+        borderRadius: 2,
+        padding: "14px 18px",
+      }}
+    >
+      <div
+        className="uppercase font-medium text-ink-3"
+        style={{ fontSize: 10.5, letterSpacing: "0.1em", marginBottom: 8 }}
+      >
+        {label}
+      </div>
+      <pre
+        style={{
+          whiteSpace: "pre-wrap",
+          margin: 0,
+          fontSize: 13,
+          lineHeight: 1.6,
+          fontFamily: mono
+            ? "JetBrains Mono, ui-monospace, monospace"
+            : "Inter, system-ui, sans-serif",
+          color: "#1A1F2E",
+          maxHeight: 420,
+          overflow: "auto",
+        }}
+      >
+        {content}
+      </pre>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Lineage diagram
+// ────────────────────────────────────────────────────────────────────────
+
+function SectionLineage({
+  sections,
+  onPick,
+}: {
+  sections: Section[];
+  onPick: (label: string) => void;
+}) {
+  return (
+    <div
+      style={{
+        marginTop: 4,
+        padding: "14px 18px",
+        background: "#FAF8F3",
+        border: "0.5px solid rgba(90,58,31,0.18)",
+        borderRadius: 2,
+      }}
+    >
+      <div
+        className="uppercase font-medium text-ink-3"
+        style={{ fontSize: 10.5, letterSpacing: "0.1em", marginBottom: 10 }}
+      >
+        Document structure
+      </div>
+      <div
+        className="flex items-center"
+        style={{ gap: 8, flexWrap: "wrap" }}
+      >
+        {sections.map((s, i) => (
+          <span key={s.id} className="flex items-center" style={{ gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => onPick(s.label)}
+              title={`Insert §${s.label} into directions`}
+              className="font-serif"
+              style={{
+                background: "#FFFFFF",
+                color: "#1A1F2E",
+                border: "0.5px solid rgba(90,58,31,0.4)",
+                borderRadius: 999,
+                padding: "5px 12px",
+                fontSize: 13,
+                fontWeight: 500,
+                cursor: "pointer",
+                transition:
+                  "background 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(184,134,47,0.18)";
+                e.currentTarget.style.borderColor = "#B8862F";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "#FFFFFF";
+                e.currentTarget.style.borderColor = "rgba(90,58,31,0.4)";
+              }}
+            >
+              {s.label}
+            </button>
+            {i < sections.length - 1 && (
+              <span
+                className="font-serif text-ink-3"
+                style={{ fontSize: 16, lineHeight: 1 }}
+              >
+                →
+              </span>
+            )}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Footer
+// ────────────────────────────────────────────────────────────────────────
+
+function WizardFooter({
+  leftLabel,
+  onLeft,
+  rightLabel,
+  onRight,
+  rightDisabled,
+}: {
+  leftLabel: string;
+  onLeft: () => void;
+  rightLabel?: string;
+  onRight?: () => void;
+  rightDisabled?: boolean;
+}) {
+  return (
+    <div
+      className="flex items-center justify-between"
+      style={{
+        marginTop: 16,
+        paddingTop: 14,
+        borderTop: "0.5px solid rgba(90,58,31,0.18)",
+        gap: 10,
+      }}
+    >
+      <button type="button" className="vc-btn-secondary" onClick={onLeft}>
+        {leftLabel}
+      </button>
+      {rightLabel && (
+        <button
+          type="button"
+          className="vc-btn-primary"
+          onClick={onRight}
+          disabled={rightDisabled}
+        >
+          {rightLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Busy card
+// ────────────────────────────────────────────────────────────────────────
+
+function BusyCard({ label }: { label: string }) {
+  return (
+    <div
+      style={{
+        background: "#FAF8F3",
+        border: "0.5px solid rgba(90,58,31,0.18)",
+        borderRadius: 2,
+        padding: "24px 20px",
+        textAlign: "center",
+      }}
+    >
+      <div
+        className="font-serif text-ink"
+        style={{ fontSize: 15, fontWeight: 500 }}
+      >
+        {label}
+      </div>
+      <div
+        className="font-mono text-ink-3"
+        style={{ fontSize: 11, marginTop: 6, letterSpacing: "0.04em" }}
+      >
+        WORKING…
+      </div>
+    </div>
+  );
+}
+

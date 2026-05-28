@@ -82,7 +82,9 @@ export async function listCasesEnriched(): Promise<CaseRowEnriched[]> {
     )
     .order("updated_at", { ascending: false });
   if (error) throw error;
-  const rows = (data ?? []) as Array<
+  // Supabase's typed query result doesn't sufficiently overlap the embedded-
+  // count shape; cast through `unknown` to accept the runtime shape we want.
+  const rows = (data ?? []) as unknown as Array<
     CaseRow & {
       documents?: Array<{ count: number }>;
       facts?: Array<{ count: number }>;

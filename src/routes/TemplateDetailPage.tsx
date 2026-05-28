@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import TemplateFieldsEditor from "../components/TemplateFieldsEditor";
+import TemplateLearnFromSample from "../components/TemplateLearnFromSample";
 import {
   cloneTemplate,
   createTemplate,
@@ -1103,6 +1104,43 @@ function TemplateEditor({
           />
         </Field>
       </EditSection>
+
+      <TemplateLearnFromSample
+        onApply={({ body, fields: newFields, sections, directions }) => {
+          // Replace the body, stash the wizard outputs (sections + the
+          // standardised directions) on the structure jsonb, and merge in
+          // any new fields whose labels aren't already taken. Existing
+          // hand-authored fields keep their position; new ones append.
+          setTpl((t) => ({
+            ...t,
+            structure: {
+              ...t.structure,
+              body,
+              sections: sections.map(({ id, label, content }) => ({
+                id,
+                label,
+                content,
+              })),
+              directions,
+            },
+          }));
+          setFields((current) => {
+            const seen = new Set(
+              current.map((f) => f.label.trim().toLowerCase())
+            );
+            const additions = newFields.filter(
+              (f) => !seen.has(f.label.trim().toLowerCase())
+            );
+            return [
+              ...current,
+              ...additions.map((f, i) => ({
+                ...f,
+                ordinal: current.length + i,
+              })),
+            ];
+          });
+        }}
+      />
 
       <EditSection
         title="Fields"

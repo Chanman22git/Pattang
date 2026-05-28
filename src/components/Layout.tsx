@@ -49,7 +49,7 @@ export default function Layout() {
           transition: "margin-left 180ms ease",
         }}
       >
-        <div className="px-14 pt-10 pb-24 max-w-[1240px]">
+        <div className="px-14 pt-10 pb-24">
           <Outlet />
         </div>
       </div>

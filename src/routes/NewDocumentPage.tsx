@@ -9,6 +9,7 @@ import {
   safeFilename,
   triggerDownload,
 } from "../lib/docx-generator";
+import LiveDocumentForm from "../components/LiveDocumentForm";
 import type {
   CaseRow,
   FieldValues,
@@ -22,6 +23,7 @@ export default function NewDocumentPage() {
   const { caseId } = useParams<{ caseId: string }>();
   const [params, setParams] = useSearchParams();
   const templateId = params.get("template");
+  const mode = params.get("mode"); // 'template' | 'live' | null
 
   const [caseRow, setCaseRow] = useState<CaseRow | null>(null);
   const [templates, setTemplates] = useState<TemplateRow[] | null>(null);
@@ -90,26 +92,101 @@ export default function NewDocumentPage() {
         New document
       </h1>
 
-      {!templateId && (
-        <TemplatePicker
-          templates={templates}
-          onPick={(id) => setParams({ template: id })}
-        />
+      {!mode && !templateId && (
+        <MethodChooser onPick={(m) => setParams({ mode: m })} />
       )}
 
-      {templateId && template && profile && (
-        <DocumentForm
-          caseRow={caseRow}
-          template={template}
-          profile={profile}
-          onCancel={() => setParams({})}
-        />
+      {(mode === "template" || templateId) && (
+        <>
+          {!templateId && (
+            <TemplatePicker
+              templates={templates}
+              onPick={(id) => setParams({ mode: "template", template: id })}
+              onBack={() => setParams({})}
+            />
+          )}
+
+          {templateId && template && profile && (
+            <DocumentForm
+              caseRow={caseRow}
+              template={template}
+              profile={profile}
+              onCancel={() => setParams({ mode: "template" })}
+            />
+          )}
+
+          {templateId && !template && (
+            <div className="text-sm text-ink-muted">Loading template...</div>
+          )}
+        </>
       )}
 
-      {templateId && !template && (
-        <div className="text-sm text-ink-muted">Loading template...</div>
+      {mode === "live" && (
+        <LiveDocumentForm caseRow={caseRow} onBack={() => setParams({})} />
       )}
     </>
+  );
+}
+
+// ============================================================================
+// Step 0: Method chooser — template vs live document
+// ============================================================================
+
+function MethodChooser({ onPick }: { onPick: (mode: "template" | "live") => void }) {
+  return (
+    <section>
+      <h2 className="font-serif text-xl font-semibold mb-3">
+        How do you want to draft this?
+      </h2>
+      <div
+        className="grid"
+        style={{ gridTemplateColumns: "1fr 1fr", gap: 16, maxWidth: 760 }}
+      >
+        <MethodCard
+          title="From a template"
+          body="Pick a saved template and fill in the case-specific fields. Best for documents you draft repeatedly."
+          cta="Use a template →"
+          onClick={() => onPick("template")}
+        />
+        <MethodCard
+          title="Live document"
+          body="Describe what you need — optionally attach a reference file — and generate a draft. Best for one-off documents."
+          cta="Draft live →"
+          onClick={() => onPick("live")}
+        />
+      </div>
+    </section>
+  );
+}
+
+function MethodCard({
+  title,
+  body,
+  cta,
+  onClick,
+}: {
+  title: string;
+  body: string;
+  cta: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-left border border-black/10 rounded-lg bg-white hover:bg-paper transition-colors"
+      style={{ padding: "20px 22px", display: "flex", flexDirection: "column", gap: 8 }}
+    >
+      <div className="font-serif font-semibold" style={{ fontSize: 17 }}>
+        {title}
+      </div>
+      <p className="text-ink-muted" style={{ fontSize: 13, lineHeight: 1.55, flex: 1 }}>
+        {body}
+      </p>
+      <span className="text-accent font-medium" style={{ fontSize: 13 }}>
+        {cta}
+      </span>
+    </button>
   );
 }
 
@@ -120,9 +197,11 @@ export default function NewDocumentPage() {
 function TemplatePicker({
   templates,
   onPick,
+  onBack,
 }: {
   templates: TemplateRow[];
   onPick: (id: string) => void;
+  onBack: () => void;
 }) {
   if (templates.length === 0) {
     return (
@@ -146,6 +225,13 @@ function TemplatePicker({
 
   return (
     <section>
+      <button
+        type="button"
+        onClick={onBack}
+        className="text-xs text-ink-muted hover:text-ink mb-3"
+      >
+        ← Choose a different method
+      </button>
       <h2 className="font-serif text-xl font-semibold mb-3">
         Pick a template
       </h2>

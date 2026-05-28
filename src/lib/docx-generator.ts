@@ -39,19 +39,67 @@ export async function generateDocxBlob(
   const body = template.structure?.body ?? "";
 
   const children = [
-    new Paragraph({
-      heading: HeadingLevel.HEADING_1,
-      alignment: AlignmentType.CENTER,
-      children: [new TextRun({ text: title, bold: true })],
-    }),
+    titleParagraph(title, { Paragraph, TextRun, HeadingLevel, AlignmentType }),
     new Paragraph({ children: [new TextRun("")] }), // spacer
     ...renderBody(body, values, { Paragraph, TextRun }),
   ];
 
-  const doc = new Document({
+  return packDocx(
+    { Document, Packer },
+    title,
+    `Generated from template "${template.name}" (${template.doc_type})`,
+    children
+  );
+}
+
+/**
+ * Live documents: the body is free text produced by the model rather than a
+ * placeholder template. Same page shell as the template path — title heading
+ * plus one paragraph per line — so both flows yield consistent .docx files.
+ */
+export async function generateDocxFromText(
+  title: string,
+  body: string
+): Promise<Blob> {
+  const docx = await import("docx");
+  const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } =
+    docx;
+
+  const children = [
+    titleParagraph(title, { Paragraph, TextRun, HeadingLevel, AlignmentType }),
+    new Paragraph({ children: [new TextRun("")] }), // spacer
+    ...textToParagraphs(body, { Paragraph, TextRun }),
+  ];
+
+  return packDocx({ Document, Packer }, title, "Live document", children);
+}
+
+function titleParagraph(
+  title: string,
+  ctor: {
+    Paragraph: typeof import("docx").Paragraph;
+    TextRun: typeof import("docx").TextRun;
+    HeadingLevel: typeof import("docx").HeadingLevel;
+    AlignmentType: typeof import("docx").AlignmentType;
+  }
+) {
+  return new ctor.Paragraph({
+    heading: ctor.HeadingLevel.HEADING_1,
+    alignment: ctor.AlignmentType.CENTER,
+    children: [new ctor.TextRun({ text: title, bold: true })],
+  });
+}
+
+function packDocx(
+  ctor: { Document: typeof import("docx").Document; Packer: typeof import("docx").Packer },
+  title: string,
+  description: string,
+  children: import("docx").Paragraph[]
+): Promise<Blob> {
+  const doc = new ctor.Document({
     creator: "Pattang",
     title,
-    description: `Generated from template "${template.name}" (${template.doc_type})`,
+    description,
     sections: [
       {
         properties: {
@@ -68,7 +116,20 @@ export async function generateDocxBlob(
     ],
   });
 
-  return Packer.toBlob(doc);
+  return ctor.Packer.toBlob(doc);
+}
+
+/** Split free text into Paragraphs — one per line, blank lines preserved. */
+function textToParagraphs(
+  body: string,
+  ctor: {
+    Paragraph: typeof import("docx").Paragraph;
+    TextRun: typeof import("docx").TextRun;
+  }
+) {
+  return body
+    .split(/\r?\n/)
+    .map((line) => new ctor.Paragraph({ children: [new ctor.TextRun(line)] }));
 }
 
 /** Split the body into Paragraphs, substituting `{{label}}` placeholders.

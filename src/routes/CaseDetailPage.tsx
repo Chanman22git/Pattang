@@ -640,7 +640,26 @@ function DocumentsSection({
               </span>
             </div>
             <div className="text-ink-2" style={{ fontSize: 12.5 }}>
-              {d.template_name ?? "—"}
+              {d.template_name ? (
+                d.template_name
+              ) : d.field_values?.kind === "live" ? (
+                <span
+                  className="font-mono uppercase"
+                  style={{
+                    fontSize: 10,
+                    padding: "2px 6px",
+                    background: "#FFFFFF",
+                    borderRadius: 2,
+                    letterSpacing: "0.06em",
+                    border: "0.5px solid rgba(90,58,31,0.18)",
+                    color: "#6B5326",
+                  }}
+                >
+                  Live
+                </span>
+              ) : (
+                "—"
+              )}
             </div>
             <div className="font-mono text-ink-2" style={{ fontSize: 12 }}>
               {d.status}

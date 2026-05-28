@@ -6,6 +6,10 @@ type Props = {
   onClick?: () => void;
 };
 
+/**
+ * Vakil Chambers empty state: foolscap-cream card, dashed Teak border,
+ * Spectral title.
+ */
 export default function EmptyState({
   title,
   body,
@@ -14,16 +18,38 @@ export default function EmptyState({
   onClick,
 }: Props) {
   return (
-    <div className="border border-dashed border-black/15 rounded-lg p-10 text-center bg-white/50">
-      <div className="font-serif text-xl font-semibold mb-2">{title}</div>
-      <p className="text-sm text-ink-muted max-w-md mx-auto leading-relaxed">
+    <div
+      className="text-center"
+      style={{
+        background: "#FAF8F3",
+        border: "0.5px dashed rgba(90,58,31,0.4)",
+        borderRadius: 2,
+        padding: "56px 24px",
+      }}
+    >
+      <div
+        className="font-serif font-medium text-ink"
+        style={{ fontSize: 22, lineHeight: 1.3, marginBottom: 8 }}
+      >
+        {title}
+      </div>
+      <p
+        className="text-ink-2"
+        style={{
+          fontSize: 14,
+          maxWidth: 480,
+          margin: "0 auto",
+          lineHeight: 1.6,
+        }}
+      >
         {body}
       </p>
       {cta && (
         <button
           disabled={disabled}
           onClick={onClick}
-          className="mt-6 inline-flex items-center px-4 py-2 rounded-md text-sm font-medium bg-accent text-white hover:bg-accent/90 disabled:bg-black/10 disabled:text-ink-muted disabled:cursor-not-allowed"
+          className={disabled ? "vc-btn-secondary" : "vc-btn-primary"}
+          style={{ marginTop: 24 }}
         >
           {cta}
         </button>

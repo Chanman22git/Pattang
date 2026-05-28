@@ -6,6 +6,10 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+.claude/
+
+# Raw design-handoff archive (contents live under design-handoff/)
+Pattang - design standards.zip
 
 # Env
 .env

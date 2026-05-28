@@ -23,6 +23,33 @@ export type CaseInsert = Omit<
   "id" | "user_id" | "created_at" | "updated_at"
 >;
 
+/**
+ * The view-model the Cases list renders against. Some fields are derived
+ * at fetch time (docs / facts / unconfirmed counts), some are derived at
+ * render time (parties, nextRel) since they depend on `title` and `notes`
+ * and on the wall clock respectively. We build this once in the data
+ * layer so the page component stays presentation-only.
+ */
+export interface CaseRowEnriched extends CaseRow {
+  /** Derived from `cases.title` — splits on " v. " (case-insensitive) when present. */
+  parties: { p: string; r: string };
+  /** Currently equal to `notes` until we have a richer summary field. */
+  gist: string | null;
+  /** Free-form stage label (e.g. "Arguments part-heard"). Pulled from
+   *  notes for now; will move to a dedicated column later. */
+  stage: string | null;
+  /** Next hearing date (ISO) — null until calendar wiring lands in P4. */
+  next: string | null;
+  /** Aggregate counts — joined from related tables. */
+  docs: number;
+  facts: number;
+  unconfirmed: number;
+  /** Soft "pin to top" for the case the advocate cares about most.
+   *  Until we have an explicit column, we treat the most recently
+   *  updated active case as the pinned one. */
+  pinned: boolean;
+}
+
 export interface ProfileRow {
   user_id: string;
   name: string | null;

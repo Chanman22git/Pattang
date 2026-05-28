@@ -13,5 +13,255 @@ body,
 }
 
 body {
-  @apply bg-paper text-ink font-sans antialiased;
+  /* Vakil Chambers: white page, Ink-wash body, Inter as the workhorse. */
+  background: #ffffff;
+  color: #6b6358;
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: #eddfbe; /* brass-soft */
+  color: #1a1f2e; /* ink */
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Vakil Chambers utility classes — port of VC_CSS from chamber.jsx.
+   These cover the interactive primitives where Tailwind alone can't
+   express the exact hover transitions / accent slides. Use these
+   instead of re-inventing them per page.
+   ──────────────────────────────────────────────────────────────────── */
+@layer components {
+  /* Underlined link with a brass slide-in on hover. */
+  .vc-link {
+    color: #6b6358;
+    text-decoration: none;
+    position: relative;
+    transition: color 100ms ease-out;
+  }
+  .vc-link::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -2px;
+    height: 1px;
+    background: #b8862f;
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 100ms ease-out;
+  }
+  .vc-link:hover {
+    color: #1a1f2e;
+  }
+  .vc-link:hover::after {
+    transform: scaleX(1);
+  }
+
+  /* Primary button — bar coat black, sindoor on hover, brass inset on press. */
+  .vc-btn-primary {
+    background: #1a1f2e;
+    color: #faf8f3;
+    border: 1px solid #1a1f2e;
+    border-radius: 2px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: "Inter", system-ui, sans-serif;
+    cursor: pointer;
+    letter-spacing: 0.005em;
+    transition: background 180ms ease-out, border-color 180ms ease-out;
+  }
+  .vc-btn-primary:hover {
+    background: #4a1818;
+    border-color: #4a1818;
+  }
+  .vc-btn-primary:active {
+    background: #1a1f2e;
+    box-shadow: inset 0 0 0 2px #b8862f;
+  }
+  .vc-btn-primary:disabled {
+    background: rgba(0, 0, 0, 0.1);
+    border-color: rgba(0, 0, 0, 0.1);
+    color: #a8956f;
+    cursor: not-allowed;
+  }
+
+  /* Secondary button — outlined, fills cream on hover. */
+  .vc-btn-secondary {
+    background: transparent;
+    color: #6b6358;
+    border: 1px solid #5a3a1f;
+    border-radius: 2px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 400;
+    font-family: "Inter", system-ui, sans-serif;
+    cursor: pointer;
+    transition: background 150ms ease-out, color 150ms ease-out,
+      border-color 150ms ease-out;
+  }
+  .vc-btn-secondary:hover {
+    background: #faf8f3;
+    color: #1a1f2e;
+    border-color: #1a1f2e;
+  }
+  .vc-btn-secondary:disabled {
+    color: #a8956f;
+    border-color: rgba(90, 58, 31, 0.18);
+    cursor: not-allowed;
+  }
+
+  /* Tag baseline + variants. */
+  .vc-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(139, 111, 71, 0.18);
+    color: #8b6f47;
+    padding: 3px 8px;
+    border-radius: 2px;
+    font-family: "Inter", system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    transition: background 150ms ease-out, color 150ms ease-out;
+  }
+  .vc-tag:hover {
+    background: #8b6f47;
+    color: #faf8f3;
+  }
+  .vc-tag-brass {
+    background: #eddfbe;
+    color: #b8862f;
+  }
+  .vc-tag-brass:hover {
+    background: #b8862f;
+    color: #faf8f3;
+  }
+  .vc-tag-seal {
+    background: #ead9d9;
+    color: #4a1818;
+  }
+  .vc-tag-seal:hover {
+    background: #4a1818;
+    color: #faf8f3;
+  }
+  .vc-tag-lawn {
+    background: #d8e2dd;
+    color: #2d4a3e;
+  }
+
+  /* Card with the brass-edge slide on hover. */
+  .vc-card {
+    background: #faf8f3;
+    border: 0.5px solid rgba(90, 58, 31, 0.18);
+    border-radius: 2px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 120ms ease-out;
+  }
+  .vc-card::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 2px;
+    background: #b8862f;
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 200ms ease-out;
+  }
+  .vc-card:hover {
+    border-color: #5a3a1f;
+  }
+  .vc-card:hover::before {
+    transform: scaleX(1);
+  }
+
+  /* Row hover tint — Court fee stamp at ~15%. */
+  .vc-row {
+    transition: background 100ms ease-out;
+    cursor: pointer;
+  }
+  .vc-row:hover {
+    background: rgba(168, 149, 111, 0.15);
+  }
+
+  /* Sidebar nav link. */
+  .vc-nav-link {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 9px 12px 9px 14px;
+    border-radius: 2px;
+    font-size: 14px;
+    font-weight: 400;
+    color: #6b6358;
+    border-left: 2px solid transparent;
+    transition: color 100ms ease-out, background 100ms ease-out,
+      border-color 100ms ease-out;
+    cursor: pointer;
+    user-select: none;
+    text-decoration: none;
+  }
+  .vc-nav-link:hover {
+    color: #1a1f2e;
+  }
+  .vc-nav-link.is-active {
+    color: #1a1f2e;
+    font-weight: 500;
+    background: #faf8f3;
+    border-left-color: #b8862f;
+  }
+  .vc-nav-link.is-soon {
+    color: #a8956f;
+  }
+
+  /* Input. */
+  .vc-input {
+    font-family: "Inter", system-ui, sans-serif;
+    font-size: 13px;
+    color: #6b6358;
+    background: #faf8f3;
+    border: 1px solid rgba(90, 58, 31, 0.18);
+    border-radius: 2px;
+    padding: 8px 12px;
+    outline: none;
+    transition: border-color 150ms ease-out, background 150ms ease-out;
+  }
+  .vc-input:hover {
+    border-color: #5a3a1f;
+  }
+  .vc-input:focus {
+    border-color: #1a1f2e;
+    background: #ffffff;
+    color: #1a1f2e;
+  }
+  .vc-input::placeholder {
+    color: #a8956f;
+  }
+
+  /* Bare icon button — used by the hamburger and inline kebab-style controls. */
+  .vc-iconbtn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    padding: 8px;
+    cursor: pointer;
+    transition: background 120ms ease-out, border-color 120ms ease-out;
+  }
+  .vc-iconbtn:hover {
+    background: #faf8f3;
+    border-color: rgba(90, 58, 31, 0.18);
+  }
+
+  /* Textarea variant — share .vc-input styling. */
+  .vc-input textarea,
+  textarea.vc-input {
+    line-height: 1.55;
+    resize: vertical;
+  }
 }

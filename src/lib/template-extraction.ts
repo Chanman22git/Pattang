@@ -11,12 +11,76 @@
 //      Requires VITE_ANTHROPIC_API_KEY at build/dev time.
 
 import mammoth from "mammoth";
-import Anthropic from "@anthropic-ai/sdk";
 import type {
   TemplateFieldCategory,
   TemplateFieldInputType,
   TemplateFieldInsert,
 } from "./types";
+
+// ── Minimal Claude client — fetch only, no SDK ─────────────────────────
+// The official @anthropic-ai/sdk pulls in node:fs / node:path through its
+// agent-toolset, which doesn't bundle for the browser. The three calls we
+// make all follow the same tool-use shape, so this tiny helper keeps the
+// bundle thin and the deploy unblocked. Browser key + a user gesture only.
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_MODEL = "claude-sonnet-4-6";
+const ANTHROPIC_VERSION = "2023-06-01";
+
+interface ClaudeToolCall<T> {
+  apiKey: string;
+  system: string;
+  userContent: string;
+  toolName: string;
+  toolDescription: string;
+  toolSchema: Record<string, unknown>;
+  maxTokens?: number;
+  signal?: AbortSignal;
+  __resultType?: T; // phantom, for type inference at call sites
+}
+
+async function callClaudeTool<T>(args: ClaudeToolCall<T>): Promise<T> {
+  const res = await fetch(ANTHROPIC_API_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": args.apiKey,
+      "anthropic-version": ANTHROPIC_VERSION,
+      // Acknowledge browser-side usage. Pilot only — production should
+      // proxy through a Supabase Edge Function so the key isn't shipped.
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: ANTHROPIC_MODEL,
+      max_tokens: args.maxTokens ?? 4096,
+      system: args.system,
+      tools: [
+        {
+          name: args.toolName,
+          description: args.toolDescription,
+          input_schema: args.toolSchema,
+        },
+      ],
+      tool_choice: { type: "tool", name: args.toolName },
+      messages: [{ role: "user", content: args.userContent }],
+    }),
+    signal: args.signal,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Claude API ${res.status}: ${body.slice(0, 400)}`);
+  }
+  const json = (await res.json()) as {
+    content: Array<
+      | { type: "text"; text: string }
+      | { type: "tool_use"; name: string; input: unknown }
+    >;
+  };
+  const tool = json.content.find((c) => c.type === "tool_use");
+  if (!tool || tool.type !== "tool_use") {
+    throw new Error("Claude did not return a tool call.");
+  }
+  return tool.input as T;
+}
 
 export type CandidateKind =
   | "date"
@@ -247,11 +311,6 @@ export async function refineWithClaude(args: {
     );
   }
 
-  const client = new Anthropic({
-    apiKey,
-    dangerouslyAllowBrowser: true,
-  });
-
   const systemPrompt = [
     "You convert a sample legal document (an Indian advocate's filing) into a reusable template.",
     "Identify every span that would change from case to case and replace it with a `{{Field label}}` placeholder.",
@@ -263,68 +322,7 @@ export async function refineWithClaude(args: {
     "Pick an input_type per field: 'text', 'textarea', 'date', or 'number'. Use 'date' only for actual dates.",
   ].join("\n");
 
-  const message = await client.messages.create(
-    {
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system: systemPrompt,
-      tools: [
-        {
-          name: "submit_template",
-          description:
-            "Submit the redacted template body plus the list of fields to ask the advocate.",
-          input_schema: {
-            type: "object",
-            properties: {
-              body: {
-                type: "string",
-                description:
-                  "The original document text with every variable span swapped for a `{{Field label}}` placeholder. Preserve line breaks.",
-              },
-              fields: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    label: { type: "string" },
-                    category: {
-                      type: "string",
-                      enum: ["basic", "prefill", "case_specific"],
-                    },
-                    input_type: {
-                      type: "string",
-                      enum: ["text", "textarea", "date", "number"],
-                    },
-                    profile_key: {
-                      type: ["string", "null"],
-                      description:
-                        "If category is prefill and this maps to a known profile key (advocate_name, address, default_court, name, email), set it. Otherwise null.",
-                    },
-                  },
-                  required: ["label", "category", "input_type"],
-                },
-              },
-            },
-            required: ["body", "fields"],
-          },
-        },
-      ],
-      tool_choice: { type: "tool", name: "submit_template" },
-      messages: [
-        {
-          role: "user",
-          content: `Here is the sample document:\n\n${args.text}`,
-        },
-      ],
-    },
-    { signal: args.signal }
-  );
-
-  const tool = message.content.find((c) => c.type === "tool_use");
-  if (!tool || tool.type !== "tool_use") {
-    throw new Error("Claude did not return a tool call — try Refine again.");
-  }
-  const input = tool.input as {
+  const input = await callClaudeTool<{
     body: string;
     fields: Array<{
       label: string;
@@ -332,7 +330,49 @@ export async function refineWithClaude(args: {
       input_type: TemplateFieldInputType;
       profile_key?: string | null;
     }>;
-  };
+  }>({
+    apiKey,
+    system: systemPrompt,
+    userContent: `Here is the sample document:\n\n${args.text}`,
+    toolName: "submit_template",
+    toolDescription:
+      "Submit the redacted template body plus the list of fields to ask the advocate.",
+    toolSchema: {
+      type: "object",
+      properties: {
+        body: {
+          type: "string",
+          description:
+            "The original document text with every variable span swapped for a `{{Field label}}` placeholder. Preserve line breaks.",
+        },
+        fields: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string" },
+              category: {
+                type: "string",
+                enum: ["basic", "prefill", "case_specific"],
+              },
+              input_type: {
+                type: "string",
+                enum: ["text", "textarea", "date", "number"],
+              },
+              profile_key: {
+                type: ["string", "null"],
+                description:
+                  "If category is prefill and this maps to a known profile key (advocate_name, address, default_court, name, email), set it. Otherwise null.",
+              },
+            },
+            required: ["label", "category", "input_type"],
+          },
+        },
+      },
+      required: ["body", "fields"],
+    },
+    signal: args.signal,
+  });
 
   return {
     body: input.body,
@@ -378,8 +418,6 @@ export async function extractSections(args: {
     );
   }
 
-  const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-
   const systemPrompt = [
     "You read an Indian advocate's filed document and break it into the canonical sections that filing structure usually carries.",
     "Common labels — pick what actually applies; do not invent sections that aren't there:",
@@ -398,51 +436,39 @@ export async function extractSections(args: {
     " 3. Label each section with a concise human-readable name (Title Case, 2–6 words).",
   ].join("\n");
 
-  const message = await client.messages.create(
-    {
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system: systemPrompt,
-      tools: [
-        {
-          name: "submit_sections",
-          description: "Submit the document split into ordered, labelled sections.",
-          input_schema: {
+  const input = await callClaudeTool<{
+    sections: Array<{ label: string; content: string }>;
+  }>({
+    apiKey,
+    system: systemPrompt,
+    userContent: `Document:\n\n${args.text}`,
+    toolName: "submit_sections",
+    toolDescription:
+      "Submit the document split into ordered, labelled sections.",
+    toolSchema: {
+      type: "object",
+      properties: {
+        sections: {
+          type: "array",
+          items: {
             type: "object",
             properties: {
-              sections: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    label: { type: "string" },
-                    content: {
-                      type: "string",
-                      description:
-                        "The contiguous slice of the document this section covers. Verbatim.",
-                    },
-                  },
-                  required: ["label", "content"],
-                },
+              label: { type: "string" },
+              content: {
+                type: "string",
+                description:
+                  "The contiguous slice of the document this section covers. Verbatim.",
               },
             },
-            required: ["sections"],
+            required: ["label", "content"],
           },
         },
-      ],
-      tool_choice: { type: "tool", name: "submit_sections" },
-      messages: [{ role: "user", content: `Document:\n\n${args.text}` }],
+      },
+      required: ["sections"],
     },
-    { signal: args.signal }
-  );
+    signal: args.signal,
+  });
 
-  const tool = message.content.find((c) => c.type === "tool_use");
-  if (!tool || tool.type !== "tool_use") {
-    throw new Error("Claude did not return a tool call.");
-  }
-  const input = tool.input as {
-    sections: Array<{ label: string; content: string }>;
-  };
   return {
     sections: input.sections.map((s, i) => ({
       id: `s${i}`,
@@ -482,8 +508,6 @@ export async function standardiseDirections(args: {
       "Anthropic API key not configured. The wizard will save your raw directions verbatim."
     );
   }
-  const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-
   const sectionList = args.sections
     .map((s, i) => `${i + 1}. ${s.label}`)
     .join("\n");
@@ -500,44 +524,28 @@ export async function standardiseDirections(args: {
     "Return the standardised brief plus a one-paragraph summary of what you understood, in the advocate's own register.",
   ].join("\n");
 
-  const message = await client.messages.create(
-    {
-      model: "claude-sonnet-4-6",
-      max_tokens: 2048,
-      system: systemPrompt,
-      tools: [
-        {
-          name: "submit_directions",
-          description: "Submit the standardised directions plus a comprehension summary.",
-          input_schema: {
-            type: "object",
-            properties: {
-              standardised: { type: "string" },
-              summary: { type: "string" },
-            },
-            required: ["standardised", "summary"],
-          },
-        },
-      ],
-      tool_choice: { type: "tool", name: "submit_directions" },
-      messages: [
-        {
-          role: "user",
-          content: `Sections of the template (in order):\n${sectionList}\n\nAdvocate's notes:\n\n${args.rawDirections}`,
-        },
-      ],
-    },
-    { signal: args.signal }
-  );
-
-  const tool = message.content.find((c) => c.type === "tool_use");
-  if (!tool || tool.type !== "tool_use") {
-    throw new Error("Claude did not return a tool call.");
-  }
-  const input = tool.input as {
+  const input = await callClaudeTool<{
     standardised: string;
     summary: string;
-  };
+  }>({
+    apiKey,
+    system: systemPrompt,
+    userContent: `Sections of the template (in order):\n${sectionList}\n\nAdvocate's notes:\n\n${args.rawDirections}`,
+    toolName: "submit_directions",
+    toolDescription:
+      "Submit the standardised directions plus a comprehension summary.",
+    toolSchema: {
+      type: "object",
+      properties: {
+        standardised: { type: "string" },
+        summary: { type: "string" },
+      },
+      required: ["standardised", "summary"],
+    },
+    maxTokens: 2048,
+    signal: args.signal,
+  });
+
   return {
     standardised: input.standardised,
     summary: input.summary,

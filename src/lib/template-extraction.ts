@@ -141,12 +141,14 @@ interface Pattern {
 }
 
 const PATTERNS: Pattern[] = [
-  // Indian court case numbers — covers W.P., Crl.P., S.C., O.S., M.C., etc.
-  // Pattern: <abbrev>(.<abbrev>)? No. <digits>/<year>
+  // Indian court case numbers — covers W.P., Crl.P., S.C., O.S., O.P., etc.
+  // Pattern: <abbrev> No. <digits> (/ | of) <year>. The number and year are
+  // separated by either "/" ("W.P. No. 4521/2023") or "of"
+  // ("O.S. No. 167 of 2024") — both are common in Indian filings.
   {
     kind: "case_no",
     regex:
-      /\b(?:[A-Z]{1,4}\.?(?:[A-Z]{0,3})?\.?\s*(?:P|M|A|M)?\.?\s*)?(?:W\.P|Crl\.P|S\.C|O\.S|C\.C|M\.C|R\.F\.A|I\.T\.A|O\.A|E\.P|P\.C\.R|Crl\.M|Misc)\.?\s*No\.?\s*\d+\s*\/\s*(?:19|20)\d{2}/g,
+      /\b(?:W\.P|Crl\.P|Crl\.M|S\.C|O\.S|O\.P|C\.C|M\.C|R\.F\.A|I\.T\.A|O\.A|E\.P|P\.C\.R|Misc)\.?\s*No\.?\s*\d+\s*(?:\/|of)\s*(?:19|20)\d{2}/g,
     label: "Case number",
     category: "case_specific",
     inputType: "text",
@@ -203,6 +205,43 @@ const PATTERNS: Pattern[] = [
   },
 ];
 
+// Party caption lines in an Indian filing: "<Name>  … Plaintiff",
+// "<Name> ... Defendant". The name sits at the start of its own line, then an
+// ellipsis (or a run of dots) and a role word follow. We capture only the
+// name so the "… Plaintiff" label stays as literal text. The role decides the
+// field label (Plaintiff → "Plaintiff name"), so this can't be expressed as a
+// single fixed-label PATTERN entry.
+const PARTY_NAME_RE =
+  /^[ \t]*([A-Z][A-Za-z.&'-]*(?:[ \t]+[A-Za-z.&'()-]+)*?)[ \t]+(?:…|\.{2,})[ \t]*(Plaintiffs?|Defendants?|Petitioners?|Respondents?|Appellants?|Complainants?|Applicants?|Accused|Opponents?)\b/gm;
+
+function findPartyNames(text: string, startSeq: number): CandidateSpan[] {
+  const out: CandidateSpan[] = [];
+  let seq = startSeq;
+  for (const match of text.matchAll(PARTY_NAME_RE)) {
+    if (match.index == null) continue;
+    const name = match[1];
+    // Name offset = match start + where the name begins within the match
+    // (after any leading whitespace). indexOf is safe: the leading run is
+    // whitespace only, so the first occurrence of the name is its position.
+    const start = match.index + match[0].indexOf(name);
+    const role = match[2].replace(/s$/i, ""); // singularise "Defendants" etc.
+    const label =
+      role.charAt(0).toUpperCase() + role.slice(1).toLowerCase() + " name";
+    out.push({
+      id: `n${seq++}`,
+      start,
+      end: start + name.length,
+      text: name,
+      kind: "name",
+      suggestedLabel: label,
+      suggestedCategory: "basic",
+      suggestedInputType: "text",
+      accepted: true,
+    });
+  }
+  return out;
+}
+
 export function findCandidates(text: string): CandidateSpan[] {
   const spans: CandidateSpan[] = [];
   let seq = 0;
@@ -226,6 +265,8 @@ export function findCandidates(text: string): CandidateSpan[] {
       });
     }
   }
+
+  spans.push(...findPartyNames(text, seq));
 
   // Sort by start, then drop overlaps (longer / earlier wins)
   spans.sort((a, b) => a.start - b.start || b.end - b.start - (a.end - a.start));
